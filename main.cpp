@@ -74,6 +74,26 @@ struct DirectoryEntry {
 		return (read_only | hidden | system | volume_id);
 	}
 
+	string name() {
+		string result;
+		const auto* name = file_name;
+		const auto* ext = file_ext;
+		for (int i=0; i<8; i++) {
+			if (name[i] == ' ')
+				break;
+			result += name[i];
+		}
+		if (not subdirectory) {
+			result += '.';
+			for (int i=0; i<3; i++) {
+				if (ext[i] == ' ')
+					break;
+				result += ext[i];
+			}
+		}
+		return result;
+	}
+
 	string_view get_file_name() {
 		return string_view(file_name, sizeof(file_name));
 	}
@@ -91,45 +111,59 @@ struct FileSystemItem {
 		return dirent->subdirectory;
 	}
 
-	// bool is_root_dir() {
-	// 	return cluster == -1;
-	// }
+	FileSystemItem(DirectoryEntry *_dirent)
+		: dirent(_dirent)
+	{}
 
 	string name() {
-		string result;
-		const auto* name = dirent->file_name;
-		const auto* ext = dirent->file_name;
-		for (int i=0; i<8; i++) {
-			if (name[i] == ' ')
-				break;
-			result += name[i];
-		}
-		if (not is_subdir()) {
-			result += '.';
-			for (int i=0; i<3; i++) {
-				if (ext[i] == ' ')
-					break;
-				result += ext[i];
-			}
-		}
-		return result;
+		return dirent->name();
 	}
 };
 
 struct File : FileSystemItem {
-	File(const vector<uint8_t>& cluster_data) {
+	File(DirectoryEntry *dirent, const vector<uint8_t>& cluster_data)
+		: FileSystemItem(dirent)
+	{
 		auto cluster = dirent->first_cluster;
 		cluster -= 2; // first 2 clusters are ignored
 		auto file_size = dirent->file_size;
 		auto it_begin = cluster_data.begin()+SECTOR_SIZE*cluster;
 		auto it_end = it_begin + file_size;
 		contents = vector<uint8_t>(it_begin, it_end);
+		cout << ((char*)contents.data());
 	}
 	vector<uint8_t> contents;
 };
 
 struct Directory : FileSystemItem {
-	vector<FileSystemItem*> dirs;
+	vector<FileSystemItem*> child_dirs;
+	Directory(DirectoryEntry* dirent, const vector<uint8_t>& cluster_data)
+		: FileSystemItem(dirent)
+	{
+		auto cluster = dirent->first_cluster;
+		cluster -= 2; // first 2 clusters are ignored
+		auto child_dirs_data = (DirectoryEntry*)&cluster_data[cluster*SECTOR_SIZE];
+		const auto MAX_CHILD_DIRS = SECTOR_SIZE / 32;
+		for (size_t i=0; i<MAX_CHILD_DIRS; i++) {
+			auto *d = &child_dirs_data[i];
+			if (d->file_name[0] == 0x0) {
+				break;
+			} else if ((uint8_t)d->file_name[0] == 0XE5) {
+				// entry deleted but still available, we can skip this
+				continue;
+			}
+		    FileSystemItem *dir;
+			if (d->subdirectory) {
+				auto name = d->name();
+				if (name == "." or name == "..")
+					continue;
+				dir = new Directory(d, cluster_data);
+			} else {
+				dir = new File(d, cluster_data);
+			}
+			child_dirs.push_back(dir);
+		}
+	}
 };
 
 class Floppy {
@@ -166,44 +200,48 @@ public:
 			}
 		}
 
-		/* RECURSIVELY READ DIRECTORIES */
-		{
-			vector<DirectoryEntry> root_dirs_data(boot.max_root_dirs);
-			auto root_dirs_size = sizeof(DirectoryEntry)*root_dirs.size();
-			img.read(reinterpret_cast<char*>(root_dirs.data()), root_dirs_size);
-			read_root_dirs(root_dirs_data);
-		}
+		/* READ DIRECTORIES AND CLUSTERS */
+		vector<DirectoryEntry> root_dirs_data(boot.max_root_dirs);
+		auto root_dirs_size = sizeof(DirectoryEntry)*root_dirs_data.size();
+		img.read(reinterpret_cast<char*>(root_dirs_data.data()), root_dirs_size);
 
-		/* READ CLUSTERS  */
-		auto bytes_per_cluster = boot.sectors_per_cluster * SECTOR_SIZE;
 		auto sectors_read = boot.reserved_sectors + boot.sectors_per_fat*boot.fats + (boot.max_root_dirs*sizeof(DirectoryEntry)/SECTOR_SIZE);
+		// clusters yet to read
 		auto cluster_count = (boot.sector_count - sectors_read) / boot.sectors_per_cluster;
-		{
-			vector<uint8_t> cluster_data(cluster_count*boot.sectors_per_cluster*SECTOR_SIZE);
-			read_clusters(cluster_data, bytes_per_cluster);
-		}
+		auto bytes_per_cluster = boot.sectors_per_cluster*SECTOR_SIZE;
+		vector<uint8_t> cluster_data(cluster_count*bytes_per_cluster);
+		img.read(reinterpret_cast<char*>(cluster_data.data()), cluster_data.size());
+
+		/* Recursively read directories */
+		read_dirs(root_dirs_data, cluster_data);
+
 		return true;
 	}
 private:
-	/* Read all the entries in the root directories and keep them
+	/* Read all the directories in the volume
 	 */
-	void read_root_dirs(const vector<DirectoryEntry>& root_dirs_data) {
+	void read_dirs(vector<DirectoryEntry>& root_dirs_data,
+						const vector<uint8_t>& cluster_data) {
 		for (size_t i=0; i<root_dirs_data.size(); i++) {
-			const auto& d = root_dirs_data[i];
-			if (d.file_name[0] == 0x0) {
+			auto *d = &root_dirs_data[i];
+			if (d->file_name[0] == 0x0) {
 				break;
-			} else if ((uint8_t)d.file_name[0] == 0XE5) {
+			} else if (d->volume_id&1) {
+				continue;
+			} else if ((uint8_t)d->file_name[0] == 0XE5) {
 				// entry deleted but still available, we can skip this
 				continue;
 			}
-		    // auto dir = new;
+		    FileSystemItem *dir;
+			if (d->subdirectory) {
+				dir = new Directory(d, cluster_data);
+			} else {
+				dir = new File(d, cluster_data);
+			}
+			root_dirs.push_back(dir);
 		}
 	}
 
-	/* Read all the clusters by doing a dfs from the root directories
-	 */
-	void read_clusters(const vector<uint8_t>& cluster_data, uint8_t bytes_per_cluster) {
-	}
 private:
 	BootSector boot;
 	vector<uint8_t> fat_data;
@@ -220,6 +258,5 @@ int main() {
     Floppy floppy;
 	floppy.read(img);
 
-	// read boot sector
 	return 0;
 }
