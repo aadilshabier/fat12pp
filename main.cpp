@@ -3,6 +3,7 @@
 #include <iomanip>
 #include <fstream>
 #include <string>
+#include <string_view>
 #include <vector>
 
 using namespace std;
@@ -37,6 +38,49 @@ struct BootSector {
 	char file_system_type[8];
 	char boot_code[448];
 	uint16_t bootable_partition_signature;
+}__attribute__((packed));
+
+struct DirectoryEntry {
+	char file_name[8];
+	char file_ext[3];
+
+	// File attributes
+	uint8_t read_only : 1;
+	uint8_t hidden : 1;
+	uint8_t system : 1;
+	uint8_t volume_id : 1;
+	uint8_t subdirectory : 1;
+	uint8_t archive : 1;
+	uint8_t device : 1;
+	uint8_t unused : 1;
+
+	uint8_t reserved;
+
+	uint8_t create_time_high_res; // 10ms units, from 1-199
+	uint16_t create_time;
+	uint16_t create_date;
+	uint16_t last_access_date;
+
+	uint16_t ignore1;
+
+	uint16_t last_write_time;
+	uint16_t last_write_date;
+
+	uint16_t first_cluster;
+	uint32_t file_size; // in bytes
+
+	bool has_long_name() {
+		return (read_only | hidden | system | volume_id);
+	}
+
+	string_view get_file_name() {
+		return string_view(file_name, sizeof(file_name));
+	}
+
+	string_view get_file_ext() {
+		return string_view(file_ext, sizeof(file_ext));
+	}
+
 }__attribute__((packed));
 
 class Floppy {
@@ -75,7 +119,21 @@ public:
 
 
 		/* READ ROOT DIRECTORIES */
+		root_dirs.resize(boot.max_root_dirs);
+		auto root_dirs_size = sizeof(DirectoryEntry)*root_dirs.size();
+		img.read(reinterpret_cast<char*>(root_dirs.data()), root_dirs_size);
 
+		auto *dir = &root_dirs[0];
+		// Print volume nam
+		if (dir->volume_id) {
+			cout << "VolumeName: " << dir->get_file_name() << endl;
+		}
+
+		dir = &root_dirs[1];
+		cout << "FileName: " << dir->get_file_name() << "." << dir->get_file_ext() << endl;
+
+		/* READ CLUSTERS  */
+		auto bytes_per_cluster = boot.sectors_per_cluster * SECTOR_SIZE;
 		
 		
 		return true;
@@ -84,6 +142,7 @@ private:
 private:
 	BootSector boot;
 	vector<uint8_t> fat_data;
+	vector<DirectoryEntry> root_dirs;
 };
 
 int main() {
