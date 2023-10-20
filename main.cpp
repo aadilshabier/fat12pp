@@ -10,6 +10,16 @@
 using namespace std;
 
 constexpr int SECTOR_SIZE = 512;
+const char* INDENT = "\t";
+
+// Create string from char* padded with ' ' and maximum possible size
+string get_padded_str(const char* s, int max_size) {
+	string result;
+	for (int i=0; i<max_size and s[i]!=' '; i++) {
+		result += s[i];
+	}
+	return result;
+}
 
 /* PACKED STRUCTS */
 
@@ -73,68 +83,58 @@ struct DirectoryEntry {
 	bool has_long_name() {
 		return (read_only | hidden | system | volume_id);
 	}
-
-	string name() {
-		string result;
-		const auto* name = file_name;
-		const auto* ext = file_ext;
-		for (int i=0; i<8; i++) {
-			if (name[i] == ' ')
-				break;
-			result += name[i];
-		}
-		if (not subdirectory) {
-			result += '.';
-			for (int i=0; i<3; i++) {
-				if (ext[i] == ' ')
-					break;
-				result += ext[i];
-			}
-		}
-		return result;
-	}
 }__attribute__((packed));
 
 /* CONVENIENCE FUNCTIONS */
 
 struct FileSystemItem {
-	DirectoryEntry* dirent;
+	DirectoryEntry dirent;
 	// int cluster = -1; // -1 for root directories
 
-	bool is_subdir() {
-		return dirent->subdirectory;
-	}
-
-	FileSystemItem(DirectoryEntry *_dirent)
+	FileSystemItem(DirectoryEntry _dirent)
 		: dirent(_dirent)
 	{}
 
-	string name() {
-		return dirent->name();
-	}
+	virtual string name() = 0;
+
+	virtual void print_contents(int level) = 0;
 };
 
 struct File : FileSystemItem {
-	File(DirectoryEntry *dirent, const vector<uint8_t>& cluster_data)
+	vector<uint8_t> contents;
+	File(DirectoryEntry dirent, const vector<uint8_t>& cluster_data)
 		: FileSystemItem(dirent)
 	{
-		auto cluster = dirent->first_cluster;
+		// cout << "FILENAME: " << name() << endl;
+		auto cluster = dirent.first_cluster;
 		cluster -= 2; // first 2 clusters are ignored
-		auto file_size = dirent->file_size;
+		auto file_size = dirent.file_size;
 		auto it_begin = cluster_data.begin()+SECTOR_SIZE*cluster;
 		auto it_end = it_begin + file_size;
 		contents = vector<uint8_t>(it_begin, it_end);
-		cout << ((char*)contents.data());
 	}
-	vector<uint8_t> contents;
+
+	/* Print contents of file */
+	void print_contents(int level) override {
+		for (int i=0; i<level; i++) cout << INDENT;
+		cout << "- File: " << name() << endl;
+		for (int i=0; i<level; i++) cout << INDENT;
+		cout << "  Contents: " << (char*)contents.data() << endl;
+	}
+
+	string name() override {
+		return get_padded_str(dirent.file_name, sizeof(dirent.file_name)) + "."
+			+ get_padded_str(dirent.file_ext, sizeof(dirent.file_ext));
+;
+	}
 };
 
 struct Directory : FileSystemItem {
 	vector<FileSystemItem*> child_dirs;
-	Directory(DirectoryEntry* dirent, const vector<uint8_t>& cluster_data)
+	Directory(DirectoryEntry dirent, const vector<uint8_t>& cluster_data)
 		: FileSystemItem(dirent)
 	{
-		auto cluster = dirent->first_cluster;
+		auto cluster = dirent.first_cluster;
 		cluster -= 2; // first 2 clusters are ignored
 		auto child_dirs_data = (DirectoryEntry*)&cluster_data[cluster*SECTOR_SIZE];
 		const auto MAX_CHILD_DIRS = SECTOR_SIZE / 32;
@@ -148,17 +148,53 @@ struct Directory : FileSystemItem {
 			}
 		    FileSystemItem *dir;
 			if (d->subdirectory) {
-				auto name = d->name();
-				if (name == "." or name == "..")
+				const auto *name = d->file_name;
+				// Either "." or ".."
+				if (name[0] == '.')
 					continue;
-				dir = new Directory(d, cluster_data);
+				dir = new Directory(*d, cluster_data);
 			} else {
-				dir = new File(d, cluster_data);
+				dir = new File(*d, cluster_data);
 			}
 			child_dirs.push_back(dir);
 		}
 	}
+
+	/* Recursively print contents
+	 */
+	void print_contents(int level) override
+	{
+		for (int i=0; i<level; i++)
+			cout << INDENT;
+		cout << "- Dir: " << name() << endl;
+		for (auto *child : child_dirs) {
+			auto name = child->name();
+			if (name == "." or name == "..")
+				continue;
+			child->print_contents(level+1);
+		}
+	}
+
+	string name() override {
+		return get_padded_str(dirent.file_name, sizeof(dirent.file_name));
+	}
 };
+
+struct VolumeID : FileSystemItem {
+	VolumeID(DirectoryEntry d)
+		: FileSystemItem(d)
+	{}
+
+	void print_contents(int level) override {
+		for(int i=0; i<level; i++) cout << INDENT;
+		cout << "- VolumeID: " << name() << endl;
+	}
+
+	string name() override {
+		return get_padded_str(dirent.file_name, sizeof(dirent.file_name));
+	}
+};
+
 
 /* DISK CLASS */
 
@@ -205,13 +241,35 @@ public:
 		// clusters yet to read
 		auto cluster_count = (boot.sector_count - sectors_read) / boot.sectors_per_cluster;
 		auto bytes_per_cluster = boot.sectors_per_cluster*SECTOR_SIZE;
-		vector<uint8_t> cluster_data(cluster_count*bytes_per_cluster);
+		cluster_data.resize(cluster_count*bytes_per_cluster);
 		img.read(reinterpret_cast<char*>(cluster_data.data()), cluster_data.size());
 
 		/* Recursively read directories */
 		read_dirs(root_dirs_data, cluster_data);
 
 		return true;
+	}
+
+	void describe_disk(bool contents=true) {
+		cout << "OEM: " << get_padded_str(boot.oem, sizeof(boot.oem)) << endl;
+		cout << "Bytes per sector: " << boot.bytes_per_sector << endl;
+		cout << "Sectors per cluster: " << (int)boot.sectors_per_cluster << endl;
+		cout << "Reserved Sectors: " << boot.reserved_sectors << endl;
+		cout << "Number of FATs: " << (int)boot.fats << endl;
+		cout << "Max Root Directories: " << boot.max_root_dirs << endl;
+		cout << "Sector count: " << boot.sector_count << endl;
+		cout << "Sectors per FAT: " << boot.sectors_per_fat << endl;
+		cout << "Hidden Sectors: " << boot.hidden_sectors << endl;
+		cout << "Volume label: " << get_padded_str(boot.volume_label, sizeof(boot.volume_label)) << endl;
+		cout << "File system type: " << get_padded_str(boot.file_system_type, sizeof(boot.file_system_type)) << endl;
+
+		if (contents) {
+			cout << "\n";
+
+			for (auto *dir : root_dirs) {
+			    dir->print_contents(0);
+			}
+		}
 	}
 private:
 	/* Read all the directories in the volume
@@ -222,17 +280,17 @@ private:
 			auto *d = &root_dirs_data[i];
 			if (d->file_name[0] == 0x0) {
 				break;
-			} else if (d->volume_id&1) {
-				continue;
 			} else if ((uint8_t)d->file_name[0] == 0XE5) {
 				// entry deleted but still available, we can skip this
 				continue;
 			}
 		    FileSystemItem *dir;
-			if (d->subdirectory) {
-				dir = new Directory(d, cluster_data);
+			if (d->volume_id) {
+				dir = new VolumeID(*d);
+			} else if (d->subdirectory) {
+				dir = new Directory(*d, cluster_data);
 			} else {
-				dir = new File(d, cluster_data);
+				dir = new File(*d, cluster_data);
 			}
 			root_dirs.push_back(dir);
 		}
@@ -242,6 +300,7 @@ private:
 	BootSector boot;
 	vector<uint8_t> fat_data;
 	vector<FileSystemItem*> root_dirs;
+	vector<uint8_t> cluster_data;
 };
 
 int main(int argc, char** argv) {
@@ -259,6 +318,8 @@ int main(int argc, char** argv) {
 
     Floppy floppy;
 	floppy.read(img);
+
+	floppy.describe_disk(true);
 
 	return 0;
 }
