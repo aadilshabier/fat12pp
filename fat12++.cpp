@@ -100,7 +100,7 @@ struct FileSystemItem {
 
 	virtual string name() = 0;
 
-	virtual void print_contents(int level) = 0;
+	virtual void print_contents(int level, bool file_contents) = 0;
 };
 
 struct File : FileSystemItem {
@@ -118,9 +118,11 @@ struct File : FileSystemItem {
 	}
 
 	/* Print contents of file */
-	void print_contents(int level) override {
+	void print_contents(int level, bool file_contents) override {
 		for (int i=0; i<level; i++) cout << INDENT;
 		cout << "- File: " << name() << endl;
+		if (not file_contents)
+			return;
 		for (int i=0; i<level; i++) cout << INDENT;
 		cout << "  Contents: " << (char*)contents.data() << endl;
 	}
@@ -165,7 +167,7 @@ struct Directory : FileSystemItem {
 
 	/* Recursively print contents
 	 */
-	void print_contents(int level) override
+	void print_contents(int level, bool file_contents) override
 	{
 		for (int i=0; i<level; i++)
 			cout << INDENT;
@@ -174,7 +176,7 @@ struct Directory : FileSystemItem {
 			auto name = child->name();
 			if (name == "." or name == "..")
 				continue;
-			child->print_contents(level+1);
+			child->print_contents(level+1, file_contents);
 		}
 	}
 
@@ -188,7 +190,7 @@ struct VolumeID : FileSystemItem {
 		: FileSystemItem(d)
 	{}
 
-	void print_contents(int level) override {
+	void print_contents(int level, bool /*file_contents*/) override {
 		for(int i=0; i<level; i++) cout << INDENT;
 		cout << "- VolumeID: " << name() << endl;
 	}
@@ -253,7 +255,7 @@ public:
 		return true;
 	}
 
-	void describe_disk(bool contents=true) {
+	void describe_disk(bool directories=true, bool file_contents=true) {
 		cout << "OEM: " << get_padded_str(boot.oem, sizeof(boot.oem)) << endl;
 		cout << "Bytes per sector: " << boot.bytes_per_sector << endl;
 		cout << "Sectors per cluster: " << (int)boot.sectors_per_cluster << endl;
@@ -266,11 +268,11 @@ public:
 		cout << "Volume label: " << get_padded_str(boot.volume_label, sizeof(boot.volume_label)) << endl;
 		cout << "File system type: " << get_padded_str(boot.file_system_type, sizeof(boot.file_system_type)) << endl;
 
-		if (contents) {
+		if (directories) {
 			cout << "\n";
 
 			for (auto *dir : root_dirs) {
-			    dir->print_contents(0);
+			    dir->print_contents(0, file_contents);
 			}
 		}
 	}
@@ -322,7 +324,7 @@ int main(int argc, char** argv) {
     Floppy floppy;
 	floppy.read(img);
 
-	floppy.describe_disk(true);
+	floppy.describe_disk(true, true);
 
 	return 0;
 }
