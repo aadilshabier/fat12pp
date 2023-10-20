@@ -1,3 +1,4 @@
+#include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -11,6 +12,8 @@ using namespace std;
 
 constexpr int SECTOR_SIZE = 512;
 const char* INDENT = "\t";
+
+static_assert(sizeof(char) == 1, "ERROR: Program was designed for system with 8 bit chars only");
 
 // Create string from char* padded with ' ' and maximum possible size
 string get_padded_str(const char* s, int max_size) {
