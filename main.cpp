@@ -9,9 +9,9 @@
 
 using namespace std;
 
-const char* FILE_NAME = "intro.img";
-
 constexpr int SECTOR_SIZE = 512;
+
+/* PACKED STRUCTS */
 
 struct BootSector {
 	// BPB
@@ -93,15 +93,9 @@ struct DirectoryEntry {
 		}
 		return result;
 	}
-
-	string_view get_file_name() {
-		return string_view(file_name, sizeof(file_name));
-	}
-
-	string_view get_file_ext() {
-		return string_view(file_ext, sizeof(file_ext));
-	}
 }__attribute__((packed));
+
+/* CONVENIENCE FUNCTIONS */
 
 struct FileSystemItem {
 	DirectoryEntry* dirent;
@@ -165,6 +159,8 @@ struct Directory : FileSystemItem {
 		}
 	}
 };
+
+/* DISK CLASS */
 
 class Floppy {
 public:
@@ -248,10 +244,16 @@ private:
 	vector<FileSystemItem*> root_dirs;
 };
 
-int main() {
-	ifstream img(FILE_NAME);
+int main(int argc, char** argv) {
+	if (argc < 2) {
+		cout << "USAGE:\n";
+		cout << "  " << argv[0] << " [FILE]\n";
+		return 1;
+	}
+	const auto *file_name = argv[1];
+	ifstream img(file_name);
     if (not img.is_open()) {
-		cerr << "ERROR: Could not open file: " << FILE_NAME << endl;
+		cerr << "ERROR: Could not open file: " << file_name << endl;
 		return 1;
 	}
 
