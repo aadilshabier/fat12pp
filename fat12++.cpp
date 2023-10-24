@@ -308,13 +308,30 @@ private:
 	vector<uint8_t> cluster_data;
 };
 
+void print_usage(const char* executable) {
+	cout << "USAGE:\n";
+	cout << "  " << executable << " [-c] FILE\n";
+	cout << endl;
+	cout << "    -c  Prints file contents.\n";
+}
+
 int main(int argc, char** argv) {
-	if (argc < 2) {
-		cout << "USAGE:\n";
-		cout << "  " << argv[0] << " [FILE]\n";
+	const char *file_name;
+	bool file_contents = false;
+	if (argc == 2) {
+		file_name = argv[1];
+	} else if (argc == 3) {
+		if (string{"-c"} != argv[1]) {
+			print_usage(argv[0]);
+			return 1;
+		}
+		file_contents = true;
+		file_name = argv[2];
+	} else {
+		print_usage(argv[0]);
 		return 1;
 	}
-	const auto *file_name = argv[1];
+
 	ifstream img(file_name);
     if (not img.is_open()) {
 		cerr << "ERROR: Could not open file: " << file_name << endl;
@@ -324,7 +341,7 @@ int main(int argc, char** argv) {
     Floppy floppy;
 	floppy.read(img);
 
-	floppy.describe_disk(true, true);
+	floppy.describe_disk(true, file_contents);
 
 	return 0;
 }
